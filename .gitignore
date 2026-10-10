@@ -1,0 +1,25 @@
+# Buildroot source + build output
+.buildroot/
+output/
+out/
+
+# Device artifacts (see inputs/README.md). The three gazelle blobs below ARE committed
+# (CoreELEC/GPL kernel + dtb + U-Boot script) so the repo is build-ready out of the box.
+inputs/*
+!inputs/README.md
+!inputs/kernel_Image
+!inputs/dtb.img
+!inputs/aml_autoscript
+
+# Images / archives
+*.img
+*.img.gz
+*.tar
+*.cpio
+*.cpio.*
+
+# macOS
+.DS_Store
+
+# keep the committed gazelle dtb despite the *.img rule above
+!inputs/dtb.img

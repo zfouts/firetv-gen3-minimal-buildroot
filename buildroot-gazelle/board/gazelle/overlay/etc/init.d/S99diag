@@ -1,0 +1,47 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 firetv-gen3-minimal-buildroot contributors
+# S99diag - blind-debug aid for when you have no serial console.
+# Periodically writes GAZL_BOOTLOG.txt back onto the FAT boot partition so you can
+# power off, pull the USB, and read it on another machine to see how far boot got
+# and the network state (useful before SSH/network is confirmed working).
+MNT=/mnt/boot
+LOG=GAZL_BOOTLOG.txt
+
+find_fat() {
+  for d in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/mmcblk0p1 /dev/mmcblk1p1; do
+    [ -b "$d" ] || continue
+    if blkid "$d" 2>/dev/null | grep -qi 'GAZLBOOT\|TYPE="vfat"'; then echo "$d"; return 0; fi
+  done
+  return 1
+}
+
+write_log() {
+  {
+    echo "=== gazelle boot log @ $(date) ==="
+    echo "--- uname ---";        uname -a
+    echo "--- cmdline ---";      cat /proc/cmdline
+    echo "--- net ifaces ---";   ls /sys/class/net 2>/dev/null
+    echo "--- ip addr ---";      ip addr 2>/dev/null || ifconfig -a 2>/dev/null
+    echo "--- routes ---";       ip route 2>/dev/null
+    echo "--- dmesg tail ---";   dmesg 2>/dev/null | tail -150
+  } > "$1" 2>&1
+}
+
+start() {
+  mkdir -p "$MNT"
+  ( for _ in $(seq 1 80); do          # ~20 min of refreshes
+      DEV=$(find_fat) || { sleep 3; continue; }
+      if mount -t vfat -o rw "$DEV" "$MNT" 2>/dev/null; then
+        write_log "$MNT/$LOG.tmp"; mv -f "$MNT/$LOG.tmp" "$MNT/$LOG" 2>/dev/null
+        sync; umount "$MNT" 2>/dev/null
+      fi
+      sleep 15
+    done ) &
+}
+
+case "$1" in
+  start) start ;;
+  stop|restart|reload) ;;
+  *) echo "Usage: $0 {start|stop}" ;;
+esac

@@ -1,0 +1,15 @@
+echo "== gazelle Buildroot beachhead =="
+# Initramfs boot: the Buildroot cpio IS the rootfs (baked into kernel.img), so no
+# root=/disk= needed. Serial console at 921600 so we can watch /init on a UART adapter.
+setenv consoleopt "console=ttyS0,921600 console=tty0 no_console_suspend earlycon=aml-uart,0xfe078000 ignore_loglevel printk.devkmsg=on"
+setenv displayopt "logo=osd0,loaded,0x00300000 vout=1080p60hz,enable hdmimode=1080p60hz outputmode=1080p60hz hdmitx=,444,8bit hdr_policy=1 frac_rate_policy=1"
+setenv bootargs "rdinit=/sbin/init ${consoleopt} ${displayopt}"
+setenv loadaddr "0x02000000"
+fatload ${device} ${devnr}:${partnr} ${loadaddr} kernel.img
+fatload ${device} ${devnr}:${partnr} ${dtb_mem_addr} dtb.img
+# staged bootm (required on this platform per the boot-chain notes)
+bootm ${loadaddr}
+bootm start
+bootm loados
+bootm prep
+bootm go
