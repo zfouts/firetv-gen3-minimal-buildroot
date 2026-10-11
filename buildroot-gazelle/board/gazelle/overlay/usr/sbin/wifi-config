@@ -1,0 +1,94 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 firetv-gen3-minimal-buildroot contributors
+# wifi-config — configure the Cube's Wi-Fi (MediaTek MT7921S) after first login.
+# Writes a wpa_supplicant.conf, PERSISTS it to the boot FAT partition (so it
+# survives the RAM-only initramfs reboots), and (re)associates now.
+#
+#   wifi-config <SSID> <PSK>     connect to a WPA2 network and save it
+#   wifi-config open <SSID>      connect to an open network and save it
+#   wifi-config status           show association + IP
+#   wifi-config scan             list nearby SSIDs (via wpa_cli)
+#   wifi-config forget           remove saved creds (device + FAT)
+IFACE=wlan0
+CONF=/etc/wpa/wpa_supplicant.conf
+WPA_PID=/var/run/wpa_supplicant.$IFACE.pid
+DHCP_PID=/var/run/udhcpc.$IFACE.pid
+
+# Stop ONLY wlan0's clients. NEVER `killall udhcpc`: eth0's udhcpc runs with -R and
+# would release the Ethernet lease, dropping the SSH lifeline and wedging access.
+stop_wlan_clients() {
+  [ -f "$WPA_PID" ] && kill "$(cat "$WPA_PID")" 2>/dev/null
+  [ -f "$DHCP_PID" ] && kill "$(cat "$DHCP_PID")" 2>/dev/null
+  wpa_cli -i $IFACE terminate >/dev/null 2>&1
+  rm -f "$WPA_PID" "$DHCP_PID"
+}
+
+find_fat() {
+  for d in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/mmcblk0p1 /dev/mmcblk1p1; do
+    [ -b "$d" ] || continue
+    blkid "$d" 2>/dev/null | grep -qiE 'GAZLBOOT|TYPE="vfat"' && { echo "$d"; return 0; }
+  done
+  return 1
+}
+persist() { # copy $CONF onto the FAT partition as wifi.conf
+  DEV=$(find_fat) || { echo "  (warning: no FAT boot partition found; not persisted)"; return 0; }
+  mkdir -p /mnt/boot
+  if mount -t vfat -o rw "$DEV" /mnt/boot 2>/dev/null; then
+    cp "$CONF" /mnt/boot/wifi.conf && sync && echo "  saved to $DEV (survives reboot)"
+    umount /mnt/boot 2>/dev/null
+  else echo "  (warning: could not mount $DEV rw; not persisted)"; fi
+}
+write_conf() { # $1=ssid $2=psk(optional -> open if empty)
+  mkdir -p /etc/wpa
+  { echo "ctrl_interface=/var/run/wpa_supplicant"
+    echo "update_config=1"
+    echo "country=US"
+    echo "network={"
+    echo "    ssid=\"$1\""
+    if [ -n "$2" ]; then echo "    psk=\"$2\""; echo "    key_mgmt=WPA-PSK"
+    else echo "    key_mgmt=NONE"; fi
+    echo "    scan_ssid=1"
+    echo "}"
+  } > "$CONF"
+}
+connect() {
+  [ -e /sys/class/net/$IFACE ] || { echo "ERROR: $IFACE not present — Wi-Fi driver not loaded."; echo "  Harvest the mt76 modules + MT7961 firmware first (see the overlay READMEs)."; exit 1; }
+  stop_wlan_clients; sleep 1
+  mkdir -p /var/run/wpa_supplicant
+  ip link set $IFACE up
+  echo ">> associating..."
+  wpa_supplicant -B -D nl80211 -i $IFACE -c "$CONF" -P "$WPA_PID" || { echo "ERROR: wpa_supplicant failed"; exit 1; }
+  i=0; while [ $i -lt 12 ]; do
+    st=$(wpa_cli -i $IFACE status 2>/dev/null | sed -n 's/^wpa_state=//p')
+    [ "$st" = COMPLETED ] && break; sleep 1; i=$((i+1))
+  done
+  echo ">> wpa_state=$st; requesting DHCP..."
+  udhcpc -i $IFACE -n -t 15 -T 2 -p "$DHCP_PID"
+  echo ">> $(ip -4 addr show $IFACE | awk '/inet /{print $2}')"
+}
+
+case "${1:-status}" in
+  status)
+    wpa_cli -i $IFACE status 2>/dev/null | grep -E 'wpa_state|ssid|bssid|freq|ip_address' || echo "not associated"
+    ip -4 addr show $IFACE 2>/dev/null | awk '/inet /{print "  ip: "$2}'
+    ;;
+  scan)
+    ip link set $IFACE up 2>/dev/null
+    wpa_cli -i $IFACE scan >/dev/null 2>&1; sleep 3
+    wpa_cli -i $IFACE scan_results 2>/dev/null
+    ;;
+  forget)
+    stop_wlan_clients; rm -f "$CONF"
+    DEV=$(find_fat) && { mkdir -p /mnt/boot; mount -t vfat -o rw "$DEV" /mnt/boot 2>/dev/null && { rm -f /mnt/boot/wifi.conf; sync; umount /mnt/boot; }; }
+    echo "forgotten (device + FAT)"
+    ;;
+  open)
+    [ -n "${2:-}" ] || { echo "usage: wifi-config open <SSID>"; exit 1; }
+    write_conf "$2" ""; connect; persist
+    ;;
+  *)
+    [ -n "${2:-}" ] || { echo "usage: wifi-config <SSID> <PSK>   |  wifi-config {status|scan|forget|open <SSID>}"; exit 1; }
+    write_conf "$1" "$2"; connect; persist
+    ;;
+esac

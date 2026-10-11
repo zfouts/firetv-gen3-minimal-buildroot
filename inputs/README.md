@@ -31,5 +31,8 @@ unpack the kernel `Image` out of its `kernel.img`:
 python3 boot-glue/unpackbootimg_v0.py kernel.img --out-kernel inputs/kernel_Image
 ```
 
-> Wi-Fi (Amlogic W2) additionally needs proprietary modules + firmware harvested the same
-> way - left out of this minimal image (Ethernet works with the in-kernel MAC).
+> Wi-Fi (MediaTek **MT7921S** — the SoC is Amlogic, the radio is MediaTek) needs kernel
+> modules + MT7961 firmware. Those are **included in the overlay** (GPL/BSD modules +
+> redistributable `linux-firmware` blobs, provenance in the overlay READMEs under
+> `buildroot-gazelle/board/gazelle/overlay/lib/`), so Wi-Fi works out of the box. See the
+> README [Wi-Fi](../README.md#wi-fi) section. (Ethernet works with the in-kernel MAC.)

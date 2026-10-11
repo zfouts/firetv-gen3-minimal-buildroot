@@ -1,0 +1,93 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 firetv-gen3-minimal-buildroot contributors
+# S30wifi — bring up the gazelle (Fire TV Cube 3rd gen) Wi-Fi.
+#
+# The radio is a MediaTek MT7921S on SDIO (037a:7901) — driven by the mainline
+# mt76 / mac80211 stack. (The SoC is Amlogic T7, but the Wi-Fi is MediaTek; it is
+# NOT the Amlogic "W2" part.) No udev here, so we load the dependency chain by
+# hand, give wlan0 a stable MAC, and — if credentials were saved (via `wifi-config`,
+# persisted on the boot FAT partition) — associate and run udhcpc. Everything is
+# backgrounded so it can never block rcS / dropbear.
+#
+# The driver .ko and MT7961 firmware are NOT shipped in this repo (proprietary;
+# harvest them yourself — see overlay/lib/modules/README.md and
+# overlay/lib/firmware/mediatek/README.md). With them absent, this script simply
+# logs that wlan0 never appeared and the image stays Ethernet-only.
+LOG=/tmp/wifi.log
+IFACE=wlan0
+# mt76 chain, in dependency order (filenames as shipped in /lib/modules):
+CHAIN="cfg80211 libarc4 mac80211 mt76 mt76-connac-lib mt76-sdio mt7921-common mt7921s"
+
+log() { echo "[S30wifi $(date +%T)] $*" >> "$LOG"; }
+
+# locate the boot FAT partition that holds persisted wifi.conf (label GAZLBOOT, else
+# any vfat partition among the usual USB/mmc nodes).
+find_fat() {
+  for d in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/mmcblk0p1 /dev/mmcblk1p1; do
+    [ -b "$d" ] || continue
+    blkid "$d" 2>/dev/null | grep -qiE 'GAZLBOOT|TYPE="vfat"' && { echo "$d"; return 0; }
+  done
+  return 1
+}
+
+load_chain() {
+  log "loading mt7921s chain"
+  for m in $CHAIN; do
+    k=$(echo "$m" | tr - _)
+    if lsmod | grep -q "^$k "; then log "  $m already loaded"; continue; fi
+    if insmod "/lib/modules/$m.ko" 2>>"$LOG"; then log "  insmod $m ok"
+    else log "  insmod $m FAILED (harvested? see overlay/lib/modules/README.md)"; fi
+  done
+}
+
+set_mac() {
+  # Stable, unique, locally-administered MAC derived from eth0 (first octet -> 06),
+  # so the chip's otherwise-random per-boot MAC doesn't churn the DHCP lease.
+  eth=$(cat /sys/class/net/eth0/address 2>/dev/null)
+  [ -n "$eth" ] || return 0
+  wmac="06:${eth#*:}"
+  ip link set $IFACE down 2>/dev/null
+  ip link set $IFACE address "$wmac" 2>>"$LOG" && log "set $IFACE mac $wmac"
+}
+
+maybe_connect() {
+  mkdir -p /mnt/boot /etc/wpa
+  DEV=$(find_fat) || { log "no FAT partition; wlan0 up, not configured"; return 0; }
+  if mount -t vfat -o ro "$DEV" /mnt/boot 2>/dev/null; then
+    [ -f /mnt/boot/wifi.conf ] && cp /mnt/boot/wifi.conf /etc/wpa/wpa_supplicant.conf
+    umount /mnt/boot 2>/dev/null
+  fi
+  if [ ! -f /etc/wpa/wpa_supplicant.conf ]; then
+    log "no saved wifi.conf; run 'wifi-config <SSID> <PSK>' to connect"; return 0
+  fi
+  log "found saved creds; associating"
+  mkdir -p /var/run/wpa_supplicant
+  wpa_supplicant -B -D nl80211 -i $IFACE -c /etc/wpa/wpa_supplicant.conf \
+    -P /var/run/wpa_supplicant.$IFACE.pid >>"$LOG" 2>&1 \
+    || { log "wpa_supplicant failed"; return 1; }
+  # scoped pidfile; NEVER `killall udhcpc` — eth0's DHCP client runs with -R and a
+  # global kill would release the Ethernet lease (your SSH lifeline).
+  udhcpc -i $IFACE -n -t 15 -T 2 -p /var/run/udhcpc.$IFACE.pid >>"$LOG" 2>&1 || log "udhcpc: no lease"
+  log "connected: $(ip -4 addr show $IFACE 2>/dev/null | awk '/inet /{print $2}')"
+}
+
+start() {
+  : > "$LOG"
+  load_chain
+  i=0; while [ ! -e /sys/class/net/$IFACE ] && [ $i -lt 15 ]; do sleep 1; i=$((i+1)); done
+  [ -e /sys/class/net/$IFACE ] || { log "$IFACE did not appear (Wi-Fi modules not harvested?)"; return 1; }
+  log "$IFACE present after ${i}s"
+  set_mac
+  ip link set $IFACE up 2>>"$LOG"
+  maybe_connect
+}
+
+case "$1" in
+  start) start & ;;                 # backgrounded: never block boot
+  stop)  # scoped to wlan0 only — must not disturb eth0's udhcpc (SSH lifeline)
+         [ -f /var/run/wpa_supplicant.$IFACE.pid ] && kill "$(cat /var/run/wpa_supplicant.$IFACE.pid)" 2>/dev/null
+         [ -f /var/run/udhcpc.$IFACE.pid ] && kill "$(cat /var/run/udhcpc.$IFACE.pid)" 2>/dev/null
+         ip link set $IFACE down 2>/dev/null ;;
+  *) echo "Usage: $0 {start|stop}" ;;
+esac
