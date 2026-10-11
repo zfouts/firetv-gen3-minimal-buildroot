@@ -27,6 +27,15 @@ BR2_SYSTEM_DHCP="eth0"
 
 # --- Packages ---
 BR2_PACKAGE_DROPBEAR=y
+# Wi-Fi (MediaTek MT7921S, SDIO 037a:7901; mt76/mac80211). wpa_supplicant for WPA2 +
+# wpa_cli for debug. The driver modules + MT7961 firmware are NOT shipped in this repo
+# (proprietary) — harvest them into the overlay (see
+# board/gazelle/overlay/lib/modules/README.md and .../lib/firmware/mediatek/README.md).
+# With them absent the image still builds; it's just Ethernet-only. Bring-up:
+# board/gazelle/overlay/etc/init.d/S30wifi; configure at runtime with `wifi-config`.
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
 
 # --- Overlay + post-build (injects optional SSH pubkey from $GAZELLE_SSH_PUBKEY) ---
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_GAZELLE_PATH)/board/gazelle/overlay"

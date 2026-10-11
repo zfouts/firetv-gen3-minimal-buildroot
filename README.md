@@ -6,7 +6,8 @@ boots from USB, reachable over **Ethernet via SSH** - a clean, tiny base to buil
 
 > **Status:** verified booting on real hardware (kernel 5.15.196 aarch64, BusyBox 1.37.0,
 > Buildroot 2026.02.3), SSH over Ethernet. RAM-only initramfs (nothing persists yet).
-> Wi-Fi and a persistent rootfs are future work (see [Roadmap](#roadmap)).
+> A persistent rootfs is future work (see [Roadmap](#roadmap)). **Wi-Fi works**
+> (MediaTek MT7921S) once you harvest its modules + firmware — see [Wi-Fi](#wi-fi).
 
 ## How it works
 
@@ -71,6 +72,39 @@ ssh root@<cube-ip>            # key auth if you set GAZELLE_SSH_PUBKEY; else pas
 - **SSH key:** set `GAZELLE_SSH_PUBKEY` before building; it's installed to
   `/root/.ssh/authorized_keys`. No keys are committed to this repo.
 
+## Wi-Fi
+
+The gazelle's radio is a **MediaTek MT7921S** (SDIO `037a:7901`) — the Amlogic T7 SoC
+is paired with a MediaTek Wi-Fi part, *not* Amlogic's own "W2". It runs on the mainline
+**mt76 / mac80211** stack. Verified on real hardware: associates WPA2 and gets a DHCP
+lease over the air.
+
+The driver modules + MT7961 firmware are **included** (overlay), so Wi-Fi works out of
+the box — no extra harvest step. They're GPL/BSD kernel modules + redistributable
+`linux-firmware` blobs (provenance + checksums in the overlay READMEs):
+
+- modules → [`buildroot-gazelle/board/gazelle/overlay/lib/modules/README.md`](buildroot-gazelle/board/gazelle/overlay/lib/modules/README.md)
+- firmware → [`buildroot-gazelle/board/gazelle/overlay/lib/firmware/mediatek/README.md`](buildroot-gazelle/board/gazelle/overlay/lib/firmware/mediatek/README.md)
+
+(The modules are prebuilt for the reused 5.15.196 kernel; the firmware can alternatively
+be pulled at build time via Buildroot's `linux-firmware` package — see the firmware README.)
+
+On the booted Cube, configure Wi-Fi after logging in over SSH:
+
+```bash
+wifi-config "YourSSID" "YourPassword"   # associate + save
+wifi-config status                       # show association + IP
+wifi-config scan                         # list nearby networks
+wifi-config open "OpenSSID"              # open network
+wifi-config forget                       # clear saved creds
+```
+
+Credentials are saved to the boot USB's FAT partition as `wifi.conf`, so every later
+boot auto-connects (the initramfs is otherwise RAM-only). `wlan0` gets a stable MAC
+derived from `eth0`, so its DHCP lease doesn't churn. If both Ethernet and Wi-Fi are up
+on the same subnet you'll have two default routes (harmless; unplug Ethernet for
+Wi-Fi-only).
+
 ## Debugging without a serial cable
 
 The initramfs writes `GAZL_BOOTLOG.txt` back onto the USB's FAT partition every ~15 s
@@ -80,7 +114,8 @@ the USB, and read that file on another machine to see how far it got.
 ## Repo layout
 
 ```
-buildroot-gazelle/   BR2_EXTERNAL tree: defconfig, /etc/inittab (devtmpfs fix), post-build (SSH key env)
+buildroot-gazelle/   BR2_EXTERNAL tree: defconfig, /etc/inittab (devtmpfs fix), post-build (SSH key env),
+                     overlay Wi-Fi bring-up (etc/init.d/S30wifi + usr/sbin/wifi-config; blobs harvested)
 boot-glue/           mkbootimg_v0.py (+ unpack), make-boot-image.sh, cfgload.txt
 scripts/             build.sh (end-to-end), flash.sh
 inputs/              harvested kernel_Image / dtb.img / aml_autoscript (you provide; git-ignored)
@@ -90,7 +125,8 @@ inputs/              harvested kernel_Image / dtb.img / aml_autoscript (you prov
 
 - Persistent ext4 rootfs (`switch_root`) so changes/packages survive reboot
 - eMMC install (boot without the USB)
-- Optional Wi-Fi (Amlogic W2 - needs harvested proprietary modules + firmware)
+- Wi-Fi hardening (WPA3, saved multi-network profiles) — basic WPA2 Wi-Fi already
+  works via the MediaTek MT7921S, see [Wi-Fi](#wi-fi)
 - A larger userland / Debian-on-ext4 path toward a home server
 
 ## Credits
